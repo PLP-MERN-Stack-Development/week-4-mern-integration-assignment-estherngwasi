@@ -1,100 +1,102 @@
-// Post.js - Mongoose model for blog posts
+const express = require('express');
+const { body, validationResult } = require('express-validator');
+const Post = require('../models/Post');
+const router = express.Router();
 
-const mongoose = require('mongoose');
+// Validation rules
+const postValidation = [
+  body('title').notEmpty().withMessage('Title is required'),
+  body('content').notEmpty().withMessage('Content is required'),
+  body('category').notEmpty().withMessage('Category is required')
+];
 
-const PostSchema = new mongoose.Schema(
-  {
-    title: {
-      type: String,
-      required: [true, 'Please provide a title'],
-      trim: true,
-      maxlength: [100, 'Title cannot be more than 100 characters'],
-    },
-    content: {
-      type: String,
-      required: [true, 'Please provide content'],
-    },
-    featuredImage: {
-      type: String,
-      default: 'default-post.jpg',
-    },
-    slug: {
-      type: String,
-      required: true,
-      unique: true,
-    },
-    excerpt: {
-      type: String,
-      maxlength: [200, 'Excerpt cannot be more than 200 characters'],
-    },
-    author: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true,
-    },
-    category: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'Category',
-      required: true,
-    },
-    tags: [String],
-    isPublished: {
-      type: Boolean,
-      default: false,
-    },
-    viewCount: {
-      type: Number,
-      default: 0,
-    },
-    comments: [
-      {
-        user: {
-          type: mongoose.Schema.Types.ObjectId,
-          ref: 'User',
-        },
-        content: {
-          type: String,
-          required: true,
-        },
-        createdAt: {
-          type: Date,
-          default: Date.now,
-        },
-      },
-    ],
-  },
-  { timestamps: true }
-);
+// Get all posts
+router.get('/', async (req, res) => {
+  try {
+    const { page = 1, limit = 10, search } = req.query;
+    const query = search ? { 
+      $or: [
+        { title: { $regex: search, $options: 'i' } },
+        { content: { $regex: search, $options: 'i' } }
+      ]
+    } : {};
 
-// Create slug from title before saving
-PostSchema.pre('save', function (next) {
-  if (!this.isModified('title')) {
-    return next();
-  }
-  
-  this.slug = this.title
-    .toLowerCase()
-    .replace(/[^\w ]+/g, '')
-    .replace(/ +/g, '-');
+    const posts = await Post.find(query)
+      .populate('category')
+      .sort({ createdAt: -1 })
+      .limit(limit * 1)
+      .skip((page - 1) * limit);
+
+    const total = await Post.countDocuments(query);
     
-  next();
+    res.json({
+      posts,
+      totalPages: Math.ceil(total / limit),
+      currentPage: page
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-// Virtual for post URL
-PostSchema.virtual('url').get(function () {
-  return `/posts/${this.slug}`;
+// Get single post
+router.get('/:id', async (req, res) => {
+  try {
+    const post = await Post.findById(req.params.id).populate('category');
+    if (!post) return res.status(404).json({ error: 'Post not found' });
+    res.json(post);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
-// Method to add a comment
-PostSchema.methods.addComment = function (userId, content) {
-  this.comments.push({ user: userId, content });
-  return this.save();
-};
+// Create post
+router.post('/', postValidation, async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
 
-// Method to increment view count
-PostSchema.methods.incrementViewCount = function () {
-  this.viewCount += 1;
-  return this.save();
-};
+    const post = new Post(req.body);
+    await post.save();
+    await post.populate('category');
+    res.status(201).json(post);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
 
-module.exports = mongoose.model('Post', PostSchema); 
+// Update post
+router.put('/:id', postValidation, async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const post = await Post.findByIdAndUpdate(
+      req.params.id,
+      req.body,
+      { new: true }
+    ).populate('category');
+    
+    if (!post) return res.status(404).json({ error: 'Post not found' });
+    res.json(post);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
+
+// Delete post
+router.delete('/:id', async (req, res) => {
+  try {
+    const post = await Post.findByIdAndDelete(req.params.id);
+    if (!post) return res.status(404).json({ error: 'Post not found' });
+    res.json({ message: 'Post deleted successfully' });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+module.exports = router;
